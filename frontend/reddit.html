@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Intel Feed Terminal</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-black text-green-400 font-mono">
+
+<!-- 🔥 NAV BAR -->
+<div class="border-b border-green-500/20 px-4 py-2 flex justify-between">
+
+  <div class="flex gap-4 text-sm">
+    <a href="/" class="text-green-300 hover:text-green-100">◼ SYSTEM</a>
+    <span class="text-green-700">|</span>
+
+    <span class="text-green-300 border-b border-green-400 pb-0.5">REDDIT</span>
+
+    <a href="/twitter.html" class="text-blue-400 hover:text-blue-200">X</a>
+    <a href="/ai-coin.html" class="text-purple-400 hover:text-purple-200">AI COIN</a>
+  </div>
+
+  <div class="text-xs text-green-700">LIVE INTEL</div>
+</div>
+
+<div class="flex h-screen">
+
+<!-- SIDEBAR -->
+<div class="w-80 border-r border-green-500/20 p-4 space-y-4">
+
+  <h1 class="text-xl font-bold text-green-300">◼ NARRATIVE INTEL SYSTEM</h1>
+
+  <div class="flex gap-2">
+    <input id="sub" placeholder="subreddit"
+      class="flex-1 bg-black border border-green-500/30 p-2"/>
+    <button onclick="addSub()" class="border px-2 hover:bg-green-500 hover:text-black">+</button>
+  </div>
+
+  <div>
+    <div class="text-xs text-green-500 mb-1">WATCHLIST</div>
+    <div id="savedSubs" class="flex flex-wrap gap-1 text-xs"></div>
+  </div>
+
+  <select id="sort" class="w-full bg-black border p-2">
+    <option value="hot">HOT</option>
+    <option value="top">TOP</option>
+    <option value="new">NEW</option>
+  </select>
+
+  <input id="keyword" placeholder="keyword filter"
+    class="w-full bg-black border p-2"/>
+
+  <input id="tokenRadar" placeholder="token radar (comma/space)"
+    class="w-full bg-black border p-2"/>
+
+  <label class="text-xs text-yellow-400">
+    MIN UPVOTES: <span id="voteVal">1k</span>
+  </label>
+
+  <input type="range" id="votes" min="0" max="50000" step="500" value="1000"
+    class="w-full accent-yellow-400"/>
+
+  <label class="text-xs text-blue-400">TIME WINDOW</label>
+  <select id="timeFilter" class="w-full bg-black border p-2">
+    <option value="1">1h</option>
+    <option value="2">2h</option>
+    <option value="6">6h</option>
+    <option value="24" selected>24h</option>
+    <option value="72">3d</option>
+  </select>
+
+  <select id="mode" class="w-full bg-black border p-2">
+    <option value="all">ALL</option>
+    <option value="meme">MEME</option>
+  </select>
+
+  <button onclick="fetchPosts()"
+    class="w-full border border-green-400 p-2 hover:bg-green-500 hover:text-black">
+    RUN SCAN
+  </button>
+
+  <div class="text-xs text-green-700">
+    STATUS: <span id="status">IDLE</span>
+  </div>
+
+</div>
+
+<!-- MAIN -->
+<div class="flex-1 p-6 overflow-y-auto">
+
+  <div class="flex justify-between mb-4">
+    <h2 class="text-green-300">LIVE INTEL FEED</h2>
+
+    <button onclick="fetchPosts()"
+      class="border px-3 py-1 hover:bg-green-500 hover:text-black">
+      REFRESH
+    </button>
+  </div>
+
+  <div id="posts" class="space-y-4"></div>
+
+  <!-- Intel Brief -->
+  <div class="mt-6 border border-green-500/20 rounded p-4 bg-black/30">
+    <div class="flex justify-between items-center gap-3">
+      <h3 class="text-green-200 text-sm font-semibold">INTEL BRIEF</h3>
+      <div class="flex items-center gap-2">
+        <label class="flex items-center gap-1 text-xs text-green-700 cursor-pointer">
+          <input id="autoBrief" type="checkbox" class="accent-green-400" />
+          AUTO
+        </label>
+        <button id="briefBtn"
+          class="border border-green-400 px-3 py-1 text-xs hover:bg-green-500 hover:text-black rounded">
+          GENERATE
+        </button>
+      </div>
+    </div>
+
+    <div class="mt-2 text-xs text-green-600">
+      STATUS: <span id="briefStatus">IDLE</span>
+    </div>
+    <div id="briefMomentum" class="mt-2 text-xs text-blue-300"></div>
+    <pre id="briefText"
+      class="mt-2 whitespace-pre-wrap text-xs text-green-200 leading-relaxed border border-green-500/10 bg-black/50 rounded p-3">No briefing yet.</pre>
+  </div>
+
+</div>
+</div>
+
+<script>
+
+/* ========= STATE ========= */
+let savedSubs = JSON.parse(localStorage.getItem("subs") ||
+'["cryptocurrency","memes","wallstreetbets"]');
+
+const postsEl = document.getElementById("posts");
+const statusEl = document.getElementById("status");
+const voteSlider = document.getElementById("votes");
+const voteVal = document.getElementById("voteVal");
+
+const tokenRadarEl = document.getElementById("tokenRadar");
+const autoBriefEl = document.getElementById("autoBrief");
+const briefBtn = document.getElementById("briefBtn");
+const briefStatusEl = document.getElementById("briefStatus");
+const briefMomentumEl = document.getElementById("briefMomentum");
+const briefTextEl = document.getElementById("briefText");
+
+let lastSources = [];
+let lastBriefKey = null;
+let briefBusy = false;
+
+/* ========= FORMAT ========= */
+function formatNumber(n){
+  if(n>=1e6) return (n/1e6).toFixed(1)+"M";
+  if(n>=1e3) return (n/1e3).toFixed(1)+"k";
+  return n;
+}
+
+function timeAgo(ts){
+  const diff = Date.now()/1000 - ts;
+  const h = diff/3600;
+  const d = diff/86400;
+  if(d>=1) return Math.floor(d)+"d";
+  if(h>=1) return Math.floor(h)+"h";
+  return Math.floor(diff/60)+"m";
+}
+
+/* ========= SLIDER ========= */
+voteSlider.oninput = () => voteVal.textContent = formatNumber(voteSlider.value);
+voteSlider.oninput();
+
+/* ========= WATCHLIST ========= */
+function saveSubs(){ localStorage.setItem("subs", JSON.stringify(savedSubs)); }
+
+function renderSubs(){
+  document.getElementById("savedSubs").innerHTML = savedSubs.map(s=>`
+    <div class="flex gap-1">
+      <button onclick="setSub('${s}')" class="px-2 border hover:bg-green-500 hover:text-black">r/${s}</button>
+      <button onclick="removeSub('${s}')" class="text-red-400">×</button>
+    </div>
+  `).join("");
+}
+
+function addSub(){
+  const v = document.getElementById("sub").value.trim();
+  if(!v || savedSubs.includes(v)) return;
+  savedSubs.push(v); saveSubs(); renderSubs();
+}
+
+function removeSub(s){
+  savedSubs = savedSubs.filter(x=>x!==s);
+  saveSubs(); renderSubs();
+}
+
+function setSub(s){
+  document.getElementById("sub").value = s;
+  fetchPosts();
+}
+
+/* ========= IMAGE ========= */
+function getImage(p){
+  return p.preview?.images?.[0]?.source?.url?.replaceAll("&amp;","&")
+  || (p.thumbnail?.startsWith("http") ? p.thumbnail : null);
+}
+
+/* ========= SCORE ========= */
+function score(p){
+  const age = Math.max(1,(Date.now()/1000 - p.createdUtc)/3600);
+  return Math.round(p.upvotes/age);
+}
+
+/* ========= FILTER ========= */
+function isMeme(p){
+  return /(meme|doge|pepe|coin|crypto|pump|moon|inu|elon)/i.test(p.title);
+}
+
+function tokenizeInput(s) {
+  return Array.from(
+    new Set(
+      String(s || "")
+        .split(/[,\s]+/)
+        .map(x => x.trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 10);
+}
+
+function escapeHtml(str) {
+  return String(str ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function buildMomentumLine({ tokens, mentions1h, mentions6h, mentionsWindow }) {
+  const tokenLabel = tokens.length ? tokens.join(", ") : "all tokens";
+  return `TOKENS: ${tokenLabel}\nMENTIONS: 1h=${mentions1h} • 6h=${mentions6h} • window=${mentionsWindow}`;
+}
+
+function computeMentionCounts(sources, tokens) {
+  const now = Date.now();
+  const toH = ms => ms / 3600000;
+  const tokenList = tokens.length ? tokens : [];
+
+  function mentionsWithin(hours) {
+    let count = 0;
+    for (const s of sources) {
+      if (toH(now - s.createdAtMs) > hours) continue;
+      if (!tokenList.length) {
+        count++;
+        continue;
+      }
+      const hay = `${s.title}\n${s.text}`.toLowerCase();
+      if (tokenList.some(t => hay.includes(t.toLowerCase()))) count++;
+    }
+    return count;
+  }
+
+  const mentions1h = mentionsWithin(1);
+  const mentions6h = mentionsWithin(6);
+  const mentionsWindow = sources.length; // sources are already within the active window
+  return { mentions1h, mentions6h, mentionsWindow };
+}
+
+async function generateBrief() {
+  if (briefBusy) return;
+
+  const sub = document.getElementById("sub").value || "cryptocurrency";
+  const sort = document.getElementById("sort").value;
+  const keyword = document.getElementById("keyword").value || "";
+  const windowHours = +document.getElementById("timeFilter").value;
+
+  const tokenRadar = tokenizeInput(tokenRadarEl?.value);
+  const tokens = tokenRadar.length ? tokenRadar : tokenizeInput(keyword);
+
+  if (!lastSources.length) {
+    briefTextEl.textContent = "No sources available yet. Run a scan first.";
+    briefStatusEl.textContent = "NO SOURCES";
+    return;
+  }
+
+  const briefKey = [
+    sub,
+    sort,
+    keyword,
+    windowHours,
+    tokens.join(","),
+    lastSources[0]?.url || ""
+  ].join("|");
+
+  if (briefKey === lastBriefKey && briefTextEl.textContent !== "No briefing yet.") {
+    return;
+  }
+
+  lastBriefKey = briefKey;
+  briefBusy = true;
+  briefStatusEl.textContent = "GENERATING...";
+
+  try {
+    const tokensPayload = tokens.slice(0, 8);
+    const res = await fetch("/intel/brief", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        platform: "reddit",
+        query: keyword || `r/${sub} ${sort}`,
+        windowHours,
+        tokens: tokensPayload,
+        sources: lastSources
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok) throw new Error(data?.error || `Brief failed (${res.status})`);
+
+    const text = [
+      `SUMMARY:\n${data.summary}`,
+      "",
+      `MOMENTUM:\n${data.momentum?.trend || "unknown"} • mentions=${data.momentum?.mentions ?? "?"}`,
+      ...(Array.isArray(data.momentum?.signals) ? data.momentum.signals.map(s => `- ${s}`) : []),
+      "",
+      "NARRATIVES:",
+      ...(Array.isArray(data.narratives)
+        ? data.narratives.map((n, i) => {
+            const ev = Array.isArray(n.evidenceUrls) ? n.evidenceUrls : [];
+            return [
+              `${i + 1}. ${n.title} (conf=${n.confidence ?? "?"})`,
+              `   WHY NOW: ${n.whyNow}`,
+              ev.length ? `   EVIDENCE:\n${ev.map(u => `     - ${u}`).join("\n")}` : "   EVIDENCE: none"
+            ].join("\n");
+          })
+        : []),
+      "",
+      `RISK: ${data.risk?.riskLevel || "unknown"} (score=${data.risk?.overallScore ?? "?"})`,
+      ...(Array.isArray(data.risk?.redFlags)
+        ? data.risk.redFlags.map((r, i) => {
+            const ev = Array.isArray(r.evidenceUrls) ? r.evidenceUrls : [];
+            return [
+              `${i + 1}. ${r.label}`,
+              `   WHY: ${r.why}`,
+              ev.length ? `   EVIDENCE:\n${ev.map(u => `     - ${u}`).join("\n")}` : "   EVIDENCE: none"
+            ].join("\n");
+          })
+        : []),
+      "",
+      "NEXT STEPS:",
+      ...(Array.isArray(data.nextSteps) ? data.nextSteps.map(s => `- ${s}`) : []),
+      "",
+      `DISCALIMER:\n${data.disclaimer || ""}`
+    ].join("\n");
+
+    briefTextEl.textContent = text;
+    briefStatusEl.textContent = "DONE";
+  } catch (e) {
+    briefStatusEl.textContent = "ERROR";
+    briefTextEl.textContent = `Brief error: ${e.message}`;
+  } finally {
+    briefBusy = false;
+  }
+}
+
+briefBtn.addEventListener("click", generateBrief);
+autoBriefEl.addEventListener("change", () => {
+  if (autoBriefEl.checked) generateBrief();
+});
+
+/* ========= FETCH ========= */
+async function fetchPosts(){
+
+  const sub = document.getElementById("sub").value || "cryptocurrency";
+  const sort = document.getElementById("sort").value;
+  const keyword = document.getElementById("keyword").value.toLowerCase();
+  const minVotes = +voteSlider.value;
+  const timeH = +document.getElementById("timeFilter").value;
+  const mode = document.getElementById("mode").value;
+
+  statusEl.textContent="SCANNING...";
+
+  const r = await fetch(`/reddit/${sub}/${sort}`);
+  const data = await r.json();
+
+  const now = Date.now()/1000;
+
+  let posts = data.posts.filter(p=>{
+    const age = (now - p.createdUtc)/3600;
+    return p.upvotes>=minVotes && age<=timeH &&
+      (!keyword || p.title.toLowerCase().includes(keyword));
+  });
+
+  if(mode==="meme") posts = posts.filter(isMeme);
+
+  posts.sort((a,b)=>score(b)-score(a));
+
+  statusEl.textContent = posts.length+" signals";
+
+  postsEl.innerHTML = posts.map(p=>{
+    const img = getImage(p);
+    return `
+      <div class="border p-3 hover:bg-green-500/10">
+        <div class="text-xs flex gap-3">
+          <span class="text-yellow-400">⬆ ${formatNumber(p.upvotes)}</span>
+          <span class="text-blue-400">⚡ ${score(p)}</span>
+          <span>${timeAgo(p.createdUtc)}</span>
+        </div>
+
+        <a href="${p.url}" target="_blank" class="text-green-300 text-lg hover:underline">
+          ${p.title}
+        </a>
+
+        ${img?`<img src="${img}" class="mt-2 max-h-60 rounded"/>`:""}
+      </div>
+    `;
+  }).join("");
+
+  // Cache sources for Intel Brief generation (evidence-based narratives).
+  lastSources = posts.slice(0, 8).map(p => ({
+    url: p.url,
+    title: p.title,
+    text: p.selftext || "",
+    engagement: {
+      upvotes: p.upvotes,
+      comments: p.numComments
+    },
+    ageHours: (Date.now() / 1000 - p.createdUtc) / 3600,
+    createdAtMs: p.createdUtc * 1000
+  }));
+
+  const tokens = tokenizeInput(tokenRadarEl?.value);
+  const mentionCounts = computeMentionCounts(lastSources, tokens.length ? tokens : tokenizeInput(keyword));
+  briefMomentumEl.textContent = buildMomentumLine({
+    tokens: tokens.length ? tokens : tokenizeInput(keyword),
+    mentions1h: mentionCounts.mentions1h,
+    mentions6h: mentionCounts.mentions6h,
+    mentionsWindow: mentionCounts.mentionsWindow
+  });
+
+  briefStatusEl.textContent = "BRIEF READY";
+  if (autoBriefEl.checked) generateBrief();
+}
+
+renderSubs();
+fetchPosts();
+
+</script>
+
+</body>
+</html>
