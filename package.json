@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dex-watcher": "node dex-watcher-free.js"
   },
   "keywords": [],
   "author": "",
@@ -15,6 +16,8 @@
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
     "node-fetch": "^3.3.2",
-    "openai": "^6.32.0"
+    "node-telegram-bot-api": "^0.67.0",
+    "openai": "^6.32.0",
+    "ws": "^8.18.3"
   }
 }

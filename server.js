@@ -110,95 +110,151 @@ app.get("/reddit/:sub/:sort", async (req, res) => {
 app.get("/twitter/search", async (req, res) => {
   const { q } = req.query;
 
-  const limit = clampInt(req.query.limit, 10, 100, 50);
-  const depth = clampInt(req.query.depth, 1, 5, 5);
-  const fetchSize = Math.min(100, limit * depth);
+  const pageSize = clampInt(req.query.limit, 10, 100, 100);
+  const pages = clampInt(req.query.pages, 1, 5, 3);
+  // Match UI time window: narrow at the API so results aren’t mostly outside the window.
+  const windowHours = clampInt(req.query.window_hours, 1, 168, 24);
+  const startTimeIso = new Date(Date.now() - windowHours * 3600000)
+    .toISOString()
+    .replace(/\.\d{3}Z$/, "Z");
 
   try {
-    const query = String(q || "").trim();
-    if (!query) return res.status(400).json({ error: "Missing query parameter `q`" });
+    // Allow empty keyword scans by falling back to a broad, valid query.
+    // Twitter requires at least one non-operator term in the query.
+    const rawQuery = String(q || "").trim();
+    const query = rawQuery || "the -is:retweet lang:en";
 
-    const url = new URL("https://api.twitter.com/2/tweets/search/recent");
-    url.searchParams.set("query", query);
-    url.searchParams.set("max_results", fetchSize);
-    url.searchParams.set(
-      "tweet.fields",
-      "public_metrics,created_at,referenced_tweets,attachments,in_reply_to_user_id"
-    );
-    url.searchParams.set(
-      "expansions",
-      "author_id,attachments.media_keys"
-    );
-    url.searchParams.set(
-      "user.fields",
-      "public_metrics,verified,username,name"
-    );
-    url.searchParams.set(
-      "media.fields",
-      "type,url,preview_image_url,public_metrics"
-    );
+    const users = {};
+    const media = {};
+    const collected = [];
+    const seenIds = new Set();
+    let nextToken = null;
 
-    const r = await fetchWithTimeout(
-      url.toString(),
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.TWITTER_BEARER_TOKEN}`
-        }
-      },
-      15000
-    );
+    for (let page = 0; page < pages; page++) {
+      const url = new URL("https://api.twitter.com/2/tweets/search/recent");
+      url.searchParams.set("query", query);
+      url.searchParams.set("start_time", startTimeIso);
+      url.searchParams.set("max_results", String(pageSize));
+      url.searchParams.set(
+        "tweet.fields",
+        "public_metrics,created_at,referenced_tweets,attachments,in_reply_to_user_id"
+      );
+      url.searchParams.set(
+        "expansions",
+        "author_id,attachments.media_keys"
+      );
+      url.searchParams.set(
+        "user.fields",
+        "public_metrics,verified,username,name"
+      );
+      url.searchParams.set(
+        "media.fields",
+        "type,url,preview_image_url,public_metrics"
+      );
+      if (nextToken) url.searchParams.set("next_token", nextToken);
 
-    if (!r.ok) {
-      const body = await r.text().catch(() => "");
-      return res.status(r.status).json({
-        error: "Twitter request failed",
-        details: body.slice(0, 200) || undefined
+      const r = await fetchWithTimeout(
+        url.toString(),
+        {
+          headers: {
+            Authorization: `Bearer ${process.env.TWITTER_BEARER_TOKEN}`
+          }
+        },
+        15000
+      );
+
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        return res.status(r.status).json({
+          error: "Twitter request failed",
+          details: body.slice(0, 200) || undefined
+        });
+      }
+
+      const data = await r.json();
+
+      (data.includes?.users || []).forEach(u => {
+        users[u.id] = u;
       });
+      (data.includes?.media || []).forEach(m => {
+        media[m.media_key] = m;
+      });
+
+      for (const t of data.data || []) {
+        if (seenIds.has(t.id)) continue;
+        seenIds.add(t.id);
+        collected.push(t);
+      }
+
+      nextToken = data.meta?.next_token;
+      if (!nextToken) break;
     }
 
-    const data = await r.json();
-
-    // Build user lookup
-    const users = {};
-    (data.includes?.users || []).forEach(u => {
-      users[u.id] = u;
-    });
-
-    // Build media lookup
-    const media = {};
-    (data.includes?.media || []).forEach(m => {
-      media[m.media_key] = m;
-    });
-
-    const tweets = (data.data || []).map(t => {
+    const tweets = collected.map(t => {
       const user = users[t.author_id] || {};
 
-      // Resolve media attachments
-      const mediaItems = (t.attachments?.media_keys || [])
+      const mediaRows = (t.attachments?.media_keys || [])
         .map(key => media[key])
-        .filter(Boolean)
-        .map(m => ({
-          type: m.type, // photo, video, animated_gif
-          url: m.url || m.preview_image_url || null,
-          preview_image_url: m.preview_image_url || null
-        }));
+        .filter(Boolean);
+
+      const mediaViewSum = mediaRows.reduce(
+        (acc, m) => acc + (Number(m.public_metrics?.view_count) || 0),
+        0
+      );
+
+      const mediaItems = mediaRows.map(m => ({
+        type: m.type,
+        url: m.url || m.preview_image_url || null,
+        preview_image_url: m.preview_image_url || null
+      }));
+
+      const pm = t.public_metrics || {};
+      const imp = pm.impression_count;
+      const twVc = pm.view_count;
+      const fromTweet =
+        imp != null && Number(imp) > 0
+          ? Number(imp)
+          : twVc != null && Number(twVc) > 0
+            ? Number(twVc)
+            : 0;
+
+      let views = fromTweet;
+      let views_estimated = false;
+
+      if (!views && mediaViewSum > 0) {
+        views = mediaViewSum;
+      }
+
+      if (!views) {
+        const likes = Number(pm.like_count) || 0;
+        const rts = Number(pm.retweet_count) || 0;
+        const reps = Number(pm.reply_count) || 0;
+        const quotes = Number(pm.quote_count) || 0;
+        const eng = likes + rts * 3 + reps * 2 + quotes * 2;
+        if (eng > 0) {
+          // X usually omits real view counts on search; this maps engagement → a reach score
+          // on the same order as the UI thresholds (1K, 5K, …). Old factor (×120) was far
+          // too small, so MIN 1K filtered out almost every tweet.
+          views = Math.round(eng * 1000);
+          views_estimated = true;
+        }
+      }
 
       return {
         id: t.id,
         text: t.text,
         created_at: t.created_at,
-        likes: t.public_metrics?.like_count || 0,
-        retweets: t.public_metrics?.retweet_count || 0,
-        replies: t.public_metrics?.reply_count || 0,
+        retweets: pm.retweet_count || 0,
+        replies: pm.reply_count || 0,
         url: `https://twitter.com/${user.username || "i"}/status/${t.id}`,
 
         username: user.username || "unknown",
         display_name: user.name || "",
         followers: user.public_metrics?.followers_count || 0,
         verified: user.verified || false,
-        // Best-effort if the tier provides it; otherwise undefined.
-        impressions: t.public_metrics?.impression_count,
-        views: t.public_metrics?.view_count,
+        impressions: pm.impression_count,
+        views,
+        views_estimated,
 
         is_quote: (t.referenced_tweets || []).some(r => r.type === "quoted"),
         is_reply: !!t.in_reply_to_user_id,

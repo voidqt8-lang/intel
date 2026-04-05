@@ -22,8 +22,8 @@ requestNotifPermission();
 
 const feedEl = document.getElementById("feed");
 const trackerListEl = document.getElementById("trackerList");
-const likesSlider = document.getElementById("likes");
-const likeVal = document.getElementById("likeVal");
+const minViewsSlider = document.getElementById("minViews");
+const minViewsVal = document.getElementById("minViewsVal");
 const tokenRadarEl = document.getElementById("tokenRadar");
 const autoBriefEl = document.getElementById("autoBrief");
 const briefBtn = document.getElementById("briefBtn");
@@ -31,9 +31,24 @@ const briefStatusEl = document.getElementById("briefStatus");
 const briefMomentumEl = document.getElementById("briefMomentum");
 const briefTextEl = document.getElementById("briefText");
 
-likesSlider.addEventListener("input", () => {
-  likeVal.innerText = fmt(Number(likesSlider.value));
+/** Slider index 0..10 → minimum view threshold */
+const MIN_VIEW_THRESHOLDS = [
+  0, 1000, 5000, 10000, 20000, 50000, 100000, 250000, 500000, 1000000, 2000000
+];
+
+function getMinViewsFromUi() {
+  const raw = Number(minViewsSlider.value);
+  const maxI = MIN_VIEW_THRESHOLDS.length - 1;
+  const i = Number.isFinite(raw)
+    ? Math.max(0, Math.min(maxI, Math.trunc(raw)))
+    : 0;
+  return MIN_VIEW_THRESHOLDS[i];
+}
+
+minViewsSlider.addEventListener("input", () => {
+  minViewsVal.innerText = fmt(getMinViewsFromUi());
 });
+minViewsVal.innerText = fmt(getMinViewsFromUi());
 
 /* =========================
    NORMALIZE TWEET
@@ -46,12 +61,16 @@ function normalize(t) {
     url: t.url || "#",
     username: t.username || "unknown",
     display_name: t.display_name || "",
-    likes: Number(t.likes || 0),
+    views: Number(t.views) || 0,
+    viewsEstimated: !!t.views_estimated,
+    impressions: t.impressions != null ? Number(t.impressions) : undefined,
     followers: Number(t.followers || 0),
     verified: !!t.verified,
     is_quote: !!t.is_quote,
     is_reply: !!t.is_reply,
     media: t.media || [],
+    retweets: Number(t.retweets || 0),
+    replies: Number(t.replies || 0),
     created_at: new Date(t.created_at || t.date || t.timestamp)
   };
 }
@@ -74,6 +93,18 @@ function timeAgo(d) {
   if (day >= 1) return Math.floor(day) + "d";
   if (h >= 1) return Math.floor(h) + "h";
   return Math.floor(diff / 60000) + "m";
+}
+
+function viewsPassFilter(views, minViewsFromSlider, viewFilter) {
+  const min =
+    viewFilter === "gte_1m"
+      ? Math.max(minViewsFromSlider, 1_000_000)
+      : minViewsFromSlider;
+  if (views < min) return false;
+  if (viewFilter === "lte_5k") return views <= 5000;
+  if (viewFilter === "lte_10k") return views <= 10000;
+  if (viewFilter === "lte_20k") return views <= 20000;
+  return true;
 }
 
 /* =========================
@@ -273,8 +304,8 @@ function getActiveQueries() {
     ? trackers.map(t => String(t.query || "").trim()).filter(Boolean)
     : [];
 
-  // If user has no saved trackers yet, fall back to the current input.
-  const queries = saved.length ? saved : inputVal ? [inputVal] : ["crypto"];
+  // If user has no saved trackers yet, run a broad scan with an empty query.
+  const queries = saved.length ? saved : [inputVal];
 
   // De-dupe while preserving order.
   const seen = new Set();
@@ -298,7 +329,10 @@ window.toggleTracking = function () {
 
     statusText.innerText = "RUNNING";
     const queries = getActiveQueries();
-    activeQuery.innerText = queries.length > 1 ? `${queries.length} TRACKERS` : queries[0];
+    activeQuery.innerText =
+      queries.length > 1
+        ? `${queries.length} TRACKERS`
+        : queries[0] || "ALL RECENT";
 
     fetchTweetsForQueries(queries); // immediate first fetch
     interval = setInterval(() => fetchTweetsForQueries(queries), 15000);
@@ -326,7 +360,7 @@ function notifyNewTweets(newTweets) {
     const first = newTweets[0];
     new Notification("X Intel — New Signal", {
       body: `@${first.username}: ${first.text.slice(0, 80)}${first.text.length > 80 ? "…" : ""}`,
-      icon: "/favicon.ico"
+      icon: "/favicon.svg"
     });
   }
 }
@@ -348,16 +382,18 @@ function showToast(msg) {
 ========================= */
 
 async function fetchTweetsForQuery(q, { updateSeenAndNotify }) {
-  const minLikes = Number(document.getElementById("likes").value);
+  const minViews = getMinViewsFromUi();
   const hours = Number(document.getElementById("timeFilter").value);
   const minFollowers = Number(document.getElementById("followers").value);
+  const viewFilter = document.getElementById("viewFilter").value;
 
   const verifiedOnly = document.getElementById("verifiedOnly").checked;
   const quoteOnly = document.getElementById("quoteOnly").checked;
   const includeReplies = document.getElementById("replies").checked; // default OFF
 
+  const hoursParam = encodeURIComponent(String(hours));
   const res = await fetch(
-    `/twitter/search?q=${encodeURIComponent(q)}&limit=100`
+    `/twitter/search?q=${encodeURIComponent(q)}&limit=100&pages=3&window_hours=${hoursParam}`
   );
   if (!res.ok) throw new Error(`Twitter HTTP ${res.status}`);
 
@@ -373,9 +409,6 @@ async function fetchTweetsForQuery(q, { updateSeenAndNotify }) {
     // Time filter
     if (ageH > hours) return false;
 
-    // Likes filter
-    if (t.likes < minLikes) return false;
-
     // Followers filter
     if (t.followers < minFollowers) return false;
 
@@ -388,10 +421,12 @@ async function fetchTweetsForQuery(q, { updateSeenAndNotify }) {
     // Replies — excluded by default unless checkbox enabled
     if (!includeReplies && t.is_reply) return false;
 
+    if (!viewsPassFilter(t.views, minViews, viewFilter)) return false;
+
     return true;
   });
 
-  tweets.sort((a, b) => b.likes - a.likes);
+  tweets.sort((a, b) => b.views - a.views);
   tweets = tweets.slice(0, 10);
 
   if (updateSeenAndNotify) {
@@ -423,11 +458,11 @@ async function fetchTweetsForQueries(queries) {
   const byId = new Map();
   for (const t of all) {
     const prev = byId.get(t.id);
-    if (!prev || t.likes > prev.likes) byId.set(t.id, t);
+    if (!prev || t.views > prev.views) byId.set(t.id, t);
   }
 
   const merged = Array.from(byId.values())
-    .sort((a, b) => b.likes - a.likes)
+    .sort((a, b) => b.views - a.views)
     .slice(0, 10);
 
   // Cache evidence sources for Intel Brief generation.
@@ -436,13 +471,12 @@ async function fetchTweetsForQueries(queries) {
     title: `${t.display_name || t.username} @${t.username}`,
     text: t.text || "",
     engagement: {
-      likes: t.likes,
+      views: t.views,
+      viewsEstimated: t.viewsEstimated,
       retweets: t.retweets,
       replies: t.replies,
       followers: t.followers,
-      verified: t.verified,
-      views: t.views,
-      impressions: t.impressions
+      verified: t.verified
     },
     ageHours: (Date.now() - t.created_at.getTime()) / 3600000,
     createdAtMs: t.created_at.getTime()
@@ -465,7 +499,7 @@ async function fetchTweetsForQueries(queries) {
 }
 
 window.fetchTweets = async function () {
-  const q = document.getElementById("search").value || "crypto";
+  const q = document.getElementById("search").value.trim();
   try {
     const tweets = await fetchTweetsForQuery(q, {
       updateSeenAndNotify: tracking
@@ -526,6 +560,11 @@ function renderTweet(t) {
     ? `<span class="text-purple-400/60 text-xs ml-1">❝ quote</span>`
     : "";
 
+  const viewStr = t.viewsEstimated ? `~${fmt(t.views)}` : `${fmt(t.views)}`;
+  const viewTitle = t.viewsEstimated
+    ? "Estimated reach from likes/retweets/replies (X often does not return tweet view counts on this API)"
+    : "Tweet or media view count from X API when available";
+
   return `
     <a href="${t.url}" target="_blank"
       class="block border border-blue-500/20 p-3 hover:bg-blue-500/10 transition-colors">
@@ -543,7 +582,7 @@ function renderTweet(t) {
         </div>
 
         <div class="text-xs text-right text-blue-400 space-y-0.5">
-          <div>❤ ${fmt(t.likes)}</div>
+          <div title="${viewTitle}">👁 ${viewStr}</div>
           <div>👥 ${fmt(t.followers)}</div>
         </div>
       </div>
